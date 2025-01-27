@@ -1,20 +1,17 @@
-# JOSM helper script by Andrew Belt (Vortico)
-# This work is dedicated to the public domain, according to CC0 1.0 Universal.
-# https://creativecommons.org/publicdomain/zero/1.0/
-
-import sys
-import traceback
-
 from java.util import ArrayList, HashMap, HashSet, Collections
 from java.util.stream import Collectors
 
 from org.openstreetmap.josm.gui import MainApplication
 from org.openstreetmap.josm.data.osm.search import SearchCompiler, SearchSetting
 from org.openstreetmap.josm.gui.layer import Layer, OsmDataLayer
-from org.openstreetmap.josm.data.osm import DataSet, OsmPrimitive, TagMap, Node, Way, Relation
+from org.openstreetmap.josm.data.osm import DataSet, OsmPrimitive, TagMap, Node, Way, Relation, NodeData
 from org.openstreetmap.josm.data import UndoRedoHandler
 from org.openstreetmap.josm.command import Command, SequenceCommand, DeleteCommand, AddCommand, AddPrimitivesCommand, ChangePropertyCommand, SelectCommand
 from org.openstreetmap.josm.tools import Geometry
+
+
+def get_active_layer():
+    return MainApplication.getLayerManager().getActiveLayer()
 
 
 def get_osm_layer():
@@ -136,13 +133,13 @@ def transfer_primitives(source_layer, dest_layer, primitives, commands=None):
     commands.add(SequenceCommand("Transfer", commands2))
 
 
-def delete_primitives(layer, primitives, commands=None):
+def delete_primitives(primitives, commands=None):
     if primitives.isEmpty():
         return
     if commands is None:
         commands = UndoRedoHandler.getInstance()
-    # TODO Delete Nodes of Ways if nothing else refers to it
-    commands.add(DeleteCommand(layer.getDataSet(), primitives))
+    # Delete nodes in ways if nothing else refers to them
+    commands.add(DeleteCommand.delete(primitives, True))
 
 
 def transfer_selected_nonintersecting_buildings(source_layer, dest_layer):
@@ -237,29 +234,24 @@ def merge_selected_addresses_to_buildings(layer):
     if merged_buildings.isEmpty():
         return
     select(layer, merged_buildings, commands)
-    UndoRedoHandler.getInstance().add(SequenceCommand("Merge addresses to buildings", commands))
+    UndoRedoHandler.getInstance().add(SequenceCommand("Merge selected addresses to buildings", commands))
 
 
-def convert_selected_buildings_to_centroids(layer):
+def convert_selected_buildings_to_nodes(layer):
+    buildings = search_selected(layer, 'type:way closed building=*')
+    if buildings.isEmpty():
+        return
 
+    nodes = ArrayList()
+    for building in buildings:
+        node = NodeData()
+        centroid = Geometry.getCentroid(building.getNodes())
+        node.setEastNorth(centroid)
+        node.setKeys(building.getKeys())
+        node.remove("building")
+        nodes.add(node)
 
-
-# Main
-def main():
-    active_layer = MainApplication.getLayerManager().getActiveLayer()
-    osm_layer = get_osm_layer()
-
-    # transfer_selected_nonintersecting_buildings(active_layer, osm_layer)
-    # transfer_selected_nonduplicate_addresses(active_layer, osm_layer)
-    # merge_selected_addresses_to_buildings(active_layer)
-    convert_selected_buildings_to_centroids(active_layer)
-
-    # comment: Review and add buildings and addresses
-    # sources: microsoft/BuildingFootprints; esri_USDOT_Tennessee; Esri World Imagery
-
-
-try:
-    main()
-except:
-    print(traceback.format_exc())
-    raise
+    commands = ArrayList()
+    delete_primitives(buildings, commands)
+    commands.add(AddPrimitivesCommand(nodes, nodes, layer.getDataSet()))
+    UndoRedoHandler.getInstance().add(SequenceCommand("Convert selected buildings to nodes", commands))
